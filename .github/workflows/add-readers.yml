@@ -1,0 +1,137 @@
+name: 🔐 Add User to Readers Team
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "readers.txt"
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  add-to-readers-team:
+    name: Validate, Add to Team & Auto-Merge
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. Checkout ────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # ── 2. Guard: only readers.txt may be changed ──────────────────────────
+      - name: Validate – only readers.txt is modified
+        id: validate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          CHANGED_FILES=$(git diff origin/main...HEAD --name-only)
+          echo "Files changed in this PR:"
+          echo "$CHANGED_FILES"
+
+          FILE_COUNT=$(echo "$CHANGED_FILES" | wc -l | tr -d ' ')
+
+          if [ "$FILE_COUNT" -gt 1 ] || [ "$CHANGED_FILES" != "readers.txt" ]; then
+            gh pr comment ${{ github.event.pull_request.number }} \
+              --body "❌ **PR rejected.** Only \`readers.txt\` may be modified. \
+          This PR changes other files and has been closed automatically. \
+          Please fork the repo, add only your username to \`readers.txt\`, and re-raise the PR."
+            gh pr close ${{ github.event.pull_request.number }}
+            echo "Closing PR — unexpected file modifications detected."
+            exit 1
+          fi
+
+          # Extract the single new username added (ignores blank lines)
+          NEW_USER=$(git diff origin/main...HEAD -- readers.txt \
+            | grep '^+[^+]' \
+            | sed 's/^+//' \
+            | grep -E '^[a-zA-Z0-9_-]+$' \
+            | head -1 \
+            | tr -d '[:space:]')
+
+          if [ -z "$NEW_USER" ]; then
+            gh pr comment ${{ github.event.pull_request.number }} \
+              --body "❌ **PR rejected.** No valid GitHub username was found in the diff. \
+          Please add your username as a plain word on a new line in \`readers.txt\`."
+            gh pr close ${{ github.event.pull_request.number }}
+            exit 1
+          fi
+
+          echo "Detected new username: $NEW_USER"
+          echo "new_user=$NEW_USER" >> "$GITHUB_OUTPUT"
+
+      # ── 3. Create the Readers team (idempotent) and grant repo read access ──
+      - name: Ensure Readers team exists with read-only repo permission
+        env:
+          GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
+        run: |
+          ORG="${{ github.repository_owner }}"
+          REPO="${{ github.event.repository.name }}"
+
+          TEAM_EXISTS=$(gh api "orgs/$ORG/teams" \
+            --jq '.[] | select(.slug=="readers") | .slug' 2>/dev/null || true)
+
+          if [ -z "$TEAM_EXISTS" ]; then
+            echo "Creating 'Readers' team in org: $ORG"
+            gh api "orgs/$ORG/teams" \
+              --method POST \
+              -f name="Readers" \
+              -f description="Read-only access — members can view & clone but cannot push or delete." \
+              -f privacy="closed" \
+              -f permission="pull"
+
+            # Grant the team read (pull) access to this repository
+            gh api "orgs/$ORG/teams/readers/repos/$ORG/$REPO" \
+              --method PUT \
+              -f permission="pull"
+
+            echo "✅ Readers team created and granted read-only access to $REPO."
+          else
+            echo "✅ Readers team already exists — skipping creation."
+
+            # Idempotently ensure repo permission is still set to pull
+            gh api "orgs/$ORG/teams/readers/repos/$ORG/$REPO" \
+              --method PUT \
+              -f permission="pull"
+          fi
+
+      # ── 4. Add the user to the Readers team ───────────────────────────────
+      - name: Add user to Readers team
+        env:
+          GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
+        run: |
+          ORG="${{ github.repository_owner }}"
+          USERNAME="${{ steps.validate.outputs.new_user }}"
+
+          echo "Adding '$USERNAME' to the Readers team..."
+          gh api "orgs/$ORG/teams/readers/memberships/$USERNAME" \
+            --method PUT \
+            -f role="member"
+
+          echo "✅ '$USERNAME' is now a member of the Readers team."
+
+      # ── 5. Auto-merge the PR ───────────────────────────────────────────────
+      - name: Auto-merge PR
+        env:
+          GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
+        run: |
+          gh pr merge ${{ github.event.pull_request.number }} \
+            --squash \
+            --admin \
+            --subject "chore: add ${{ steps.validate.outputs.new_user }} to Readers team [skip ci]"
+
+      # ── 6. Success comment ────────────────────────────────────────────────
+      - name: Post success comment
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr comment ${{ github.event.pull_request.number }} \
+            --body "✅ **Welcome, @${{ steps.validate.outputs.new_user }}!** \
+          You have been added to the **Readers** team and now have **read-only** access \
+          to this repository. You can view and clone the repo but cannot push, delete branches, \
+          or modify any content."

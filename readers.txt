@@ -1,0 +1,14 @@
+# Readers Team - GitHub Usernames
+# ─────────────────────────────────────────────────────────────────────────────
+# HOW TO GET READ ACCESS:
+#   1. Fork this repository
+#   2. Add ONLY your GitHub username on a new line below (no spaces/symbols)
+#   3. Open a Pull Request — it will be auto-merged and you'll be added
+#      to the "Readers" team with read-only access automatically.
+#
+# ⚠️  Rules:
+#   - Add ONLY your username. Do NOT modify any other file.
+#   - PRs that touch other files will be automatically CLOSED.
+#   - One username per line.
+# ─────────────────────────────────────────────────────────────────────────────
+
